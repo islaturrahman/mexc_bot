@@ -1,8 +1,12 @@
-import mexc_spot as mexc
-import mexc_strategy as strategy
+import platforms.mexcspot.mexc_spot as mexc
+import platforms.mexcspot.mexc_strategy as strategy
 
 from backtest import BacktestMexc
-from mexc_strategy import SimpleRSIStrategy,RSIMeanReversionStrategy,AlwaysInMarketStrategy,RSITrendFollowingStrategy,SupertrendFootprintStrategy
+from platforms.mexcspot.mexc_strategy import (SimpleRSIStrategy,
+                           RSIMeanReversionStrategy,
+                           AlwaysInMarketStrategy,
+                           RSITrendFollowingStrategy,
+                           SupertrendFootprintStrategy)
 
 import os
 
@@ -66,7 +70,7 @@ if __name__ == "__main__":
     print("MEXC DATA & BACKTESTING SYSTEM")
     print("="*60)
     
-    # === STEP 0: DOWNLOAD DATA JIKA BELUM ADA ===
+
     if not os.path.exists(filename):
         print(f"[INFO] File {filename} tidak ditemukan. Mendownload data dari MEXC...")
         # Ambil data 350 hari ke belakang (sesuai setting kamu)
@@ -74,12 +78,10 @@ if __name__ == "__main__":
     else:
         print(f"[OK] Menggunakan file {filename} yang sudah ada.")
 
-    # === STEP 1: ANALISIS SINYAL ===
     print("\n[STEP 1] Checking RSI signals in data...")
     backtester.check_rsi_signals(filename)
     
-    # === STEP 2: RUN BACKTEST DENGAN SIZE FIX ===
-    # Gunakan modal $89 sesuai saldo akun MEXC kamu
+
     print("\n[STEP 2] Running Backtest (RSI Strategy)...")
     stats, bt = backtester.run_backtest()
     

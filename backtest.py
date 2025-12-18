@@ -1,4 +1,4 @@
-import mexc_spot as mexc
+import platforms.mexcspot.mexc_spot as mexc
 import pandas as pd
 import numpy as np
 import json
@@ -12,7 +12,7 @@ import time
 from backtesting import Backtest
 from backtesting.lib import crossover
 from backtesting.test import SMA
-from mexc_strategy import RSI,SimpleRSIStrategy,RSIStrategy
+from platforms.mexcspot.mexc_strategy import RSI,SimpleRSIStrategy,RSIStrategy
 
 
 
