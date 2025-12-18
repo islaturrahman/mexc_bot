@@ -1,0 +1,9 @@
+pandas
+pandas-ta
+numpy
+matplotlib
+scipy
+ta-lib
+yfinance
+scikit-learn
+seaborn
