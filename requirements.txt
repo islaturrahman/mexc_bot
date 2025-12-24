@@ -6,4 +6,11 @@ scipy
 ta-lib
 yfinance
 scikit-learn
-seaborn
+# seaborn
+quantconnect-stubs
+tensorflow
+transformers
+torch
+joblib
+plotly
+lightgbm

@@ -24,6 +24,7 @@ class BacktestMexc:
                  days_ago=350,
                  cash=0, start_time = None, end_time = None,
                  commission = 0,
+                 margin = None,
                  strategy= SimpleRSIStrategy
                  ):
         
@@ -36,6 +37,7 @@ class BacktestMexc:
         self.start_time = start_time
         self.end_time = end_time
         self.commission = commission
+        self.margin = margin
         self.strategy = strategy
 
 
@@ -314,7 +316,8 @@ class BacktestMexc:
             self.strategy,
             cash=self.cash,
             commission=self.commission,
-            exclusive_orders=True
+            exclusive_orders=True,
+            margin=self.margin
         )
         
         # Run backtest

@@ -19,7 +19,7 @@ from platforms.mexcspot.mexc_strategy import (SimpleRSIStrategy,
                             TurtleClassic
                            )
 
-from platforms.mexcspot.ml_strategy import CPOStrategy
+# from platforms.mexcspot.ml_strategy import CPOStrategy
 
 from platforms.mexcspot.mexc_live_trade import MexcTurtleBot
 
@@ -35,10 +35,11 @@ class MexcRobot():
     def mexc_backtesting_strategy(self):
         backtester = BacktestMexc(
             symbol="BNBUSDT",
-            interval="5m",
+            interval="30m",
             limit=1000,
-            cash=1000000,
+            cash=305.20,
             days_ago=10,
+            margin=0.1,
             commission=0.0005,
             strategy=TurtleTradingOptimized
         )

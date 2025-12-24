@@ -1,0 +1,3 @@
+# IMPLEMENTASI AI Pada Trading
+# https://z-library.ec/book/115582930/abf831/handson-ai-trading-with-python-quantconnect-and-aws.html
+# https://github.com/QuantConnect/HandsOnAITradingBook/tree/master

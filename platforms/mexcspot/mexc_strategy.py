@@ -3,6 +3,8 @@ import pandas as pd
 import pandas_ta as ta
 import numpy as np
 
+from AlgorithmImports import *
+
 
 import requests
 from datetime import datetime, timedelta
@@ -11,6 +13,12 @@ import time
 
 from datetime import datetime, timedelta
 from backtesting import Strategy
+
+# IMPLEMENTASI AI Pada Trading
+# https://z-library.ec/book/115582930/abf831/handson-ai-trading-with-python-quantconnect-and-aws.html
+# https://github.com/QuantConnect/HandsOnAITradingBook/tree/master/
+
+
 
 def RSI(array, period=14):
     """Hitung RSI indicator"""
@@ -384,7 +392,7 @@ class TurtleTrading1(Strategy):
     system2_entry = 55
     system2_exit = 20
     atr_period = 20
-    risk_per_trade = 0.01
+    risk_per_trade = 0.0
     max_units = 4
     stop_loss_atr = 2.0
     pyramid_atr = 0.5
@@ -931,26 +939,145 @@ class TurtleTrading2(Strategy):
 
 
 
+class TurtleClassic(Strategy):
+    # === PARAMETERS ===
+    sys1_entry = 20
+    sys1_exit = 10
+
+    sys2_entry = 55
+    sys2_exit = 20
+
+    risk_fraction = 0.02      # 2% initial capital
+    tick = 0.0001             # price tick
+    bigPointValue = 1.0
+
+    position_fraction = 0.25  # fixed position size (Turtle original pakai unit, bukan %)
+
+    def init(self):
+        high = self.data.High
+        low = self.data.Low
+        close = self.data.Close
+
+        # === CHANNELS ===
+        self.sys1_high = self.I(lambda x: pd.Series(x).rolling(self.sys1_entry).max(), high)
+        self.sys1_low = self.I(lambda x: pd.Series(x).rolling(self.sys1_entry).min(), low)
+        self.sys1_exit_low = self.I(lambda x: pd.Series(x).rolling(self.sys1_exit).min(), low)
+        self.sys1_exit_high = self.I(lambda x: pd.Series(x).rolling(self.sys1_exit).max(), high)
+
+        self.sys2_high = self.I(lambda x: pd.Series(x).rolling(self.sys2_entry).max(), high)
+        self.sys2_low = self.I(lambda x: pd.Series(x).rolling(self.sys2_entry).min(), low)
+        self.sys2_exit_low = self.I(lambda x: pd.Series(x).rolling(self.sys2_exit).min(), low)
+        self.sys2_exit_high = self.I(lambda x: pd.Series(x).rolling(self.sys2_exit).max(), high)
+
+        # === STATE ===
+        self.entry_price = None
+        self.system = None
+        self.initial_capital = None
+        self.cooldown = False
+
+    def next(self):
+        if len(self.data) < self.sys2_entry:
+            return
+
+        price = self.data.Close[-1]
+
+        if self.initial_capital is None:
+            self.initial_capital = self.equity
+
+        stop_risk = (self.risk_fraction * self.initial_capital) / self.bigPointValue
+
+        # ================= EXIT =================
+        if self.position:
+            if self.position.is_long:
+                if self.system == 'sys1':
+                    channel_stop = self.sys1_exit_low[-2] - self.tick
+                else:
+                    channel_stop = self.sys2_exit_low[-2] - self.tick
+
+                fixed_stop = self.entry_price - stop_risk
+                exit_price = max(channel_stop, fixed_stop)
+
+                if price <= exit_price:
+                    self.position.close()
+                    self._reset()
+                    return
+
+            else:  # SHORT
+                if self.system == 'sys1':
+                    channel_stop = self.sys1_exit_high[-2] + self.tick
+                else:
+                    channel_stop = self.sys2_exit_high[-2] + self.tick
+
+                fixed_stop = self.entry_price + stop_risk
+                exit_price = min(channel_stop, fixed_stop)
+
+                if price >= exit_price:
+                    self.position.close()
+                    self._reset()
+                    return
+
+            return
+
+        # ================= ENTRY =================
+        if self.cooldown:
+            self.cooldown = False
+            return
+
+        size = self.position_fraction
+
+        # --- SYSTEM 1 ---
+        if price >= self.sys1_high[-2] + self.tick:
+            self.buy(size=size)
+            self.entry_price = price
+            self.system = 'sys1'
+            return
+
+        if price <= self.sys1_low[-2] - self.tick:
+            self.sell(size=size)
+            self.entry_price = price
+            self.system = 'sys1'
+            return
+
+        # --- SYSTEM 2 ---
+        if price >= self.sys2_high[-2] + self.tick:
+            self.buy(size=size)
+            self.entry_price = price
+            self.system = 'sys2'
+            return
+
+        if price <= self.sys2_low[-2] - self.tick:
+            self.sell(size=size)
+            self.entry_price = price
+            self.system = 'sys2'
+            return
+
+    def _reset(self):
+        self.entry_price = None
+        self.system = None
+        self.cooldown = True
+
+
+
+
 
 class TurtleTradingOptimized(Strategy):
     # === PARAMETERS ===
-    system1_entry = 20
-    system1_exit = 15
-    system2_entry = 55
+    system1_entry = 75         # Standar Turtle (Lebih responsif untuk modal kecil)
+    system1_exit = 10
+    system2_entry = 80         
     system2_exit = 20
 
-    atr_period = 20
+    atr_period = 20            # Standar teknikal (lebih stabil)
     adx_period = 14
-    ma_period = 20
+    ma_period = 125            # Filter tren lebih kuat
 
-    risk_per_trade = 0.01      # 1% risk
+    risk_per_trade = 0.02      # 2% risk agar tidak melanggar min_order $5
     stop_loss_atr = 2.0
-    pyramid_atr = 1.0          # TURTLE ASLI
-    max_units = 3
+    pyramid_atr = 0.5          # Tambah posisi lebih cepat saat profit (agresif)
+    max_units = 2              # Dibatasi 2 agar margin aman
 
-    max_exposure = 0.20        # HARD CAP (30%)
-
-    tp_mult = 3.0
+    max_exposure = 0.8         # Sisakan 20% untuk fee & buffer volatilitas
+    tp_mult = 4.0
 
     
 
@@ -1033,12 +1160,35 @@ class TurtleTradingOptimized(Strategy):
         
         return adx
 
-    # === POSITION SIZING (FIXED & CORRECT) ===
     def position_size(self, atr):
+        # 1. Hitung jumlah uang yang siap dipertaruhkan (Risk Amount)
         risk_amount = self.equity * self.risk_per_trade
-        unit_value = atr * self.stop_loss_atr
-        size = risk_amount / unit_value
-        return min(size / self.equity, self.max_exposure)
+        
+        # 2. Hitung jarak Stop Loss dalam satuan harga
+        sl_dist = atr * self.stop_loss_atr
+        
+        if sl_dist <= 0:
+            return 0
+            
+        # 3. Hitung berapa banyak unit aset (Quantity) yang bisa dibeli
+        # Formula: Risk / Dist_to_SL
+        raw_size = risk_amount / sl_dist
+        
+        # 4. Konversi ke bentuk proporsi (0.0 s/d 1.0) untuk backtesting.py
+        # Kita tambahkan batas (clamping) agar tidak melebihi equity atau max_exposure
+        size_proportion = (raw_size * self.data.Close[-1]) / self.equity
+        
+        # 5. Penyesuaian untuk modal kecil (< $500)
+        # Jika hasil proporsi terlalu kecil, broker sering menolak.
+        # Kita pastikan size tidak melebihi max_exposure yang ditentukan.
+        final_size = min(size_proportion, self.max_exposure)
+        
+        # Jika modal sangat kecil, pastikan tidak mencoba trading di bawah 1% equity
+        # karena biasanya akan kena reject minimum order size di real exchange.
+        if final_size < 0.01: 
+            return 0
+            
+        return final_size
 
 
     def next(self):
@@ -1209,123 +1359,3 @@ class TurtleTradingOptimized(Strategy):
                 
         return pd.Series(regimes, index=adx_s.index)
 
-
-
-
-
-class TurtleClassic(Strategy):
-    # === PARAMETERS ===
-    sys1_entry = 20
-    sys1_exit = 10
-
-    sys2_entry = 55
-    sys2_exit = 20
-
-    risk_fraction = 0.02      # 2% initial capital
-    tick = 0.0001             # price tick
-    bigPointValue = 1.0
-
-    position_fraction = 0.25  # fixed position size (Turtle original pakai unit, bukan %)
-
-    def init(self):
-        high = self.data.High
-        low = self.data.Low
-        close = self.data.Close
-
-        # === CHANNELS ===
-        self.sys1_high = self.I(lambda x: pd.Series(x).rolling(self.sys1_entry).max(), high)
-        self.sys1_low = self.I(lambda x: pd.Series(x).rolling(self.sys1_entry).min(), low)
-        self.sys1_exit_low = self.I(lambda x: pd.Series(x).rolling(self.sys1_exit).min(), low)
-        self.sys1_exit_high = self.I(lambda x: pd.Series(x).rolling(self.sys1_exit).max(), high)
-
-        self.sys2_high = self.I(lambda x: pd.Series(x).rolling(self.sys2_entry).max(), high)
-        self.sys2_low = self.I(lambda x: pd.Series(x).rolling(self.sys2_entry).min(), low)
-        self.sys2_exit_low = self.I(lambda x: pd.Series(x).rolling(self.sys2_exit).min(), low)
-        self.sys2_exit_high = self.I(lambda x: pd.Series(x).rolling(self.sys2_exit).max(), high)
-
-        # === STATE ===
-        self.entry_price = None
-        self.system = None
-        self.initial_capital = None
-        self.cooldown = False
-
-    def next(self):
-        if len(self.data) < self.sys2_entry:
-            return
-
-        price = self.data.Close[-1]
-
-        if self.initial_capital is None:
-            self.initial_capital = self.equity
-
-        stop_risk = (self.risk_fraction * self.initial_capital) / self.bigPointValue
-
-        # ================= EXIT =================
-        if self.position:
-            if self.position.is_long:
-                if self.system == 'sys1':
-                    channel_stop = self.sys1_exit_low[-2] - self.tick
-                else:
-                    channel_stop = self.sys2_exit_low[-2] - self.tick
-
-                fixed_stop = self.entry_price - stop_risk
-                exit_price = max(channel_stop, fixed_stop)
-
-                if price <= exit_price:
-                    self.position.close()
-                    self._reset()
-                    return
-
-            else:  # SHORT
-                if self.system == 'sys1':
-                    channel_stop = self.sys1_exit_high[-2] + self.tick
-                else:
-                    channel_stop = self.sys2_exit_high[-2] + self.tick
-
-                fixed_stop = self.entry_price + stop_risk
-                exit_price = min(channel_stop, fixed_stop)
-
-                if price >= exit_price:
-                    self.position.close()
-                    self._reset()
-                    return
-
-            return
-
-        # ================= ENTRY =================
-        if self.cooldown:
-            self.cooldown = False
-            return
-
-        size = self.position_fraction
-
-        # --- SYSTEM 1 ---
-        if price >= self.sys1_high[-2] + self.tick:
-            self.buy(size=size)
-            self.entry_price = price
-            self.system = 'sys1'
-            return
-
-        if price <= self.sys1_low[-2] - self.tick:
-            self.sell(size=size)
-            self.entry_price = price
-            self.system = 'sys1'
-            return
-
-        # --- SYSTEM 2 ---
-        if price >= self.sys2_high[-2] + self.tick:
-            self.buy(size=size)
-            self.entry_price = price
-            self.system = 'sys2'
-            return
-
-        if price <= self.sys2_low[-2] - self.tick:
-            self.sell(size=size)
-            self.entry_price = price
-            self.system = 'sys2'
-            return
-
-    def _reset(self):
-        self.entry_price = None
-        self.system = None
-        self.cooldown = True

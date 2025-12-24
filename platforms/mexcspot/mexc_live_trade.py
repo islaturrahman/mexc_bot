@@ -1,7 +1,7 @@
 from platforms.mexcspot.config import api_key, secret_key, mexc_host
 from platforms.mexcspot import mexc_spot as mexc
 
-from platforms.mexcspot.ml_strategy import CPOStrategy
+# from platforms.mexcspot.ml_strategy import CPOStrategy
 
 import time
 import json
@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import pytz
+from decimal import Decimal, ROUND_DOWN
 
 # Asumsi: library 'mexc_sdk' Anda
 # import mexc_sdk as mexc 
@@ -44,28 +45,7 @@ class MexcTurtleBot():
         self.load_state()
         print(f"[INIT] Turtle Bot Loaded. State: {self.state}")
 
-    # ================= STATE MANAGEMENT =================
-    def load_state(self):
-        """Memuat status trading terakhir agar tahan terhadap restart"""
-        if os.path.exists(self.state_file):
-            with open(self.state_file, 'r') as f:
-                self.state = json.load(f)
-        else:
-            self.state = {
-                'in_position': False,
-                'position_side': None, # 'LONG' or 'SHORT'
-                'entry_price': 0.0,
-                'units': 0,
-                'last_pyramid_price': 0.0,
-                'system_in_use': None, # 'sys1' or 'sys2'
-                'stop_loss_price': 0.0
-            }
-
-    def save_state(self):
-        """Menyimpan status ke file JSON"""
-        with open(self.state_file, 'w') as f:
-            json.dump(self.state, f, indent=4)
-
+    
     # ================= DATA & INDICATORS =================
     def get_data(self):
         klines = self.market.get_kline(params={
@@ -149,10 +129,60 @@ class MexcTurtleBot():
         df['regime'] = np.select(conditions, choices, default=0) # 0 = Quiet
 
         return df
+    
+    # ================= STATE MANAGEMENT =================
+    def load_state(self):
+        """Memuat status trading terakhir agar tahan terhadap restart"""
+        if os.path.exists(self.state_file):
+            with open(self.state_file, 'r') as f:
+                self.state = json.load(f)
+        else:
+            self.state = {
+                'in_position': False,
+                'position_side': None,  # 'LONG'
+                'entry_price': 0.0,
+                'units': 0,
+                'last_pyramid_price': 0.0,
+                'system_in_use': None,  # 'sys1' or 'sys2'
+                'stop_loss_price': 0.0
+            }
+
+
+    def save_state(self):
+        """Menyimpan status ke file JSON"""
+        with open(self.state_file, 'w') as f:
+            json.dump(self.state, f, indent=4)
+
+
+    # ================= POSITION FROM EXCHANGE =================
+    def get_open_position_qty(self):
+        """
+        Hitung posisi REAL dari order history (SPOT)
+        BUY  = +qty
+        SELL = -qty
+        """
+        orders = self.trade.get_allorders(params={
+            "symbol": self.symbol,
+            "limit": 500
+        })
+
+        net_qty = Decimal("0")
+
+        for o in orders:
+            if o["status"] != "FILLED":
+                continue
+
+            qty = Decimal(o["executedQty"])
+            if o["side"] == "BUY":
+                net_qty += qty
+            elif o["side"] == "SELL":
+                net_qty -= qty
+
+        return float(max(net_qty, Decimal("0")))
+
 
     # ================= LOGIKA ORDER =================
     def execute_trade(self, side, quantity):
-        """Wrapper untuk eksekusi API"""
         print(f"[{side}] Executing {quantity} {self.symbol}...")
         try:
             params = {
@@ -162,158 +192,174 @@ class MexcTurtleBot():
                 'quantity': quantity
             }
             order = self.trade.post_order(params=params)
-
-            print(f"> Order Success: {order} -- Price {side}: {order}")
+            print(f"> Order Executed: {order}")
             return True
         except Exception as e:
             print(f"> Order Failed: {e}")
             return False
 
+
+    def adjust_qty(self, qty, symbol_info):
+        step = Decimal(symbol_info["baseSizePrecision"])
+        return float(
+            Decimal(str(qty)).quantize(step, rounding=ROUND_DOWN)
+        )
+
+
     def calculate_position_size(self, equity, atr):
-        """Menghitung ukuran posisi berdasarkan risiko 1%"""
-        risk_amount = equity * self.risk_per_trade
-        # Stop loss distance = 2 * ATR
-        sl_distance = atr * self.stop_loss_atr 
-        
-        if sl_distance == 0: return 0
-        
-        # Position Size = Risk / Distance
-        # Contoh: Equity $100, Risk $1. ATR $1000. SL Dist $2000.
-        # Size = 1 / 2000 = 0.0005 BTC
+        equity = Decimal(str(equity))
+        atr = Decimal(str(atr))
+
+        risk_amount = equity * Decimal(str(self.risk_per_trade))
+        sl_distance = atr * Decimal(str(self.stop_loss_atr))
+
+        if sl_distance <= 0:
+            return 0.0
+
         raw_size = risk_amount / sl_distance
-        return round(raw_size, 5) # Sesuaikan presisi koin
 
-    # ================= LOGIKA UTAMA (NEXT) =================
+        exchange_info = self.market.get_exchangeInfo(params={"symbol": self.symbol})
+        symbol_info = exchange_info["symbols"][0]
+
+        qty = Decimal(raw_size).quantize(
+            Decimal(symbol_info["baseSizePrecision"]),
+            rounding=ROUND_DOWN
+        )
+
+        return float(qty)
+
+
+    # ================= LOGIKA UTAMA =================
     def check_signals(self):
-        df = self.get_data()
-        if df.empty: return
-
-        # Ambil data terakhir (candle yang sudah close / candle berjalan)
-        # Untuk live trading, amannya gunakan candle sebelumnya (iloc[-2]) untuk sinyal,
-        # dan harga sekarang (iloc[-1]) untuk eksekusi.
-        curr = df.iloc[-1] 
-        prev = df.iloc[-2]
+        print(self.get_open_position_qty())
         
+        df = self.get_data()
+        if df.empty:
+            return
+
+        curr = df.iloc[-1]
+        prev = df.iloc[-2]
+
         price = curr['close']
         atr = prev['atr']
         regime = prev['regime']
 
-        
-
-       
-        
-        # Update Info Saldo
+        # ---- ACCOUNT INFO (HANYA UNTUK USDT) ----
         acc = self.trade.get_account_info()
-        usdt = float(next((x['free'] for x in acc['balances'] if x['asset']=='USDT'), 0))
-        print(f'Balance Portopolio USDT: {usdt} Entry Qyt :  {self.calculate_position_size(usdt, atr)} ATR : {atr}  Market Regime : {regime}')
-        # if True:  # Trending
-        #     self.execute_trade('BUY', self.calculate_position_size(usdt, atr))
-        #     time.sleep(30)
+        usdt = float(next((x['free'] for x in acc['balances'] if x['asset'] == 'USDT'), 0))
 
-        print()
+        open_qty = self.get_open_position_qty()
+        total_equity = usdt + (open_qty * price)
 
-        # ---------------------------------------------------
-        # LOGIKA EXIT / CLOSE
-        # ---------------------------------------------------
+        print(f"[INFO] USDT: {usdt} | OpenQty: {open_qty} | Equity: {total_equity}")
+
+        # =====================================================
+        # EXIT LOGIC
+        # =====================================================
         if self.state['in_position']:
             is_long = self.state['position_side'] == 'LONG'
             entry = self.state['entry_price']
-            
+
             should_close = False
             close_reason = ""
 
-            # 1. Exit Volatile (Take Profit Cepat)
+            # 1. Take Profit Volatile
             if regime == 2:
-                tp_price = entry + (atr * self.tp_mult) if is_long else entry - (atr * self.tp_mult)
-                if (is_long and price >= tp_price) or (not is_long and price <= tp_price):
+                tp_price = entry + (atr * self.tp_mult)
+                if price >= tp_price:
                     should_close = True
                     close_reason = "TP Volatile"
 
-            # 2. Exit Standar Turtle (Donchian Exit & Stop Loss)
+            # 2. Stop Loss / Donchian Exit
             stop_price = self.state['stop_loss_price']
-            
-            if is_long:
-                exit_lvl = prev['sys1_exit_low'] if self.state['system_in_use'] == 'sys1' else prev['sys2_exit_low']
-                # Hard Stop Loss atau Donchian Exit
-                if price <= stop_price or price <= exit_lvl:
-                    should_close = True
-                    close_reason = "StopLoss/Donchian Exit"
-            else: # Short (Hanya jika main Futures/Margin)
-                exit_lvl = prev['sys1_exit_high'] if self.state['system_in_use'] == 'sys1' else prev['sys2_exit_high']
-                if price >= stop_price or price >= exit_lvl:
-                    should_close = True
-                    close_reason = "StopLoss/Donchian Exit"
+            exit_lvl = (
+                prev['sys1_exit_low']
+                if self.state['system_in_use'] == 'sys1'
+                else prev['sys2_exit_low']
+            )
+
+            if price <= stop_price or price <= exit_lvl:
+                should_close = True
+                close_reason = "StopLoss / Donchian Exit"
 
             if should_close:
                 print(f">>> SIGNAL CLOSE: {close_reason}")
-                # Jual semua unit
-                coin_bal = float(next((x['free'] for x in acc['balances'] if x['asset']==self.symbol.replace("USDT","")), 0))
-                side = 'SELL' if is_long else 'BUY'
-                if self.execute_trade(side, coin_bal):
+
+                if open_qty <= 0:
+                    print(">>> Position already closed on exchange")
+                    self.state['in_position'] = False
+                    self.save_state()
+                    return
+
+                if self.execute_trade('SELL', open_qty):
                     self.state = {
-                        'in_position': False, 'position_side': None, 
-                        'entry_price': 0, 'units': 0, 'last_pyramid_price': 0, 
-                        'system_in_use': None, 'stop_loss_price': 0
+                        'in_position': False,
+                        'position_side': None,
+                        'entry_price': 0,
+                        'units': 0,
+                        'last_pyramid_price': 0,
+                        'system_in_use': None,
+                        'stop_loss_price': 0
                     }
                     self.save_state()
-                return # Selesai loop ini
+                return
 
-            # 3. Pyramiding (Hanya jika Trending)
+            # 3. PYRAMIDING (TREND ONLY)
             if regime == 1 and self.state['units'] < self.max_units:
                 step = atr * self.pyramid_atr
-                if is_long and price >= self.state['last_pyramid_price'] + step:
-                    print(">>> PYRAMIDING (ADD POSITION)")
-                    size = self.calculate_position_size(usdt + (coin_bal*price), atr) # Gunakan Total Equity
-                    if self.execute_trade('BUY', size):
+                if price >= self.state['last_pyramid_price'] + step:
+                    print(">>> PYRAMID ADD")
+
+                    size = self.calculate_position_size(total_equity, atr)
+                    if size > 0 and self.execute_trade('BUY', size):
                         self.state['units'] += 1
                         self.state['last_pyramid_price'] = price
-                        # Naikkan Stop Loss posisi sebelumnya juga (Trailing)
-                        self.state['stop_loss_price'] += (0.5 * atr) 
+                        self.state['stop_loss_price'] += (0.5 * atr)
                         self.save_state()
 
-        # ---------------------------------------------------
-        # LOGIKA ENTRY
-        # ---------------------------------------------------
-        else: # Not in position
-            if regime == 0: return # Quiet market, do nothing
+        # =====================================================
+        # ENTRY LOGIC
+        # =====================================================
+        else:
+            if regime == 0:
+                return
 
             size = self.calculate_position_size(usdt, atr)
-            if size <= 0: return
+            if size <= 0:
+                return
 
             signal_found = False
             sys_used = None
-            side = None
 
-            # Cek System 1 (Short Term)
-            if (price > prev['sys1_high']) and (price > prev['ma50']) and (prev['plus_di'] > prev['minus_di']):
-                # Filter Volume (Opsional sesuai prompt)
+            if (
+                price > prev['sys1_high']
+                and price > prev['ma50']
+                and prev['plus_di'] > prev['minus_di']
+            ):
                 if prev['vol'] > df['vol'].rolling(20).mean().iloc[-2]:
                     signal_found = True
                     sys_used = 'sys1'
-                    side = 'BUY'
-            
-            # Cek System 2 (Long Term) - Prioritas lebih tinggi jika system 1 gagal
-            elif (price > prev['sys2_high']) and (price > prev['ma50']) and (prev['plus_di'] > prev['minus_di']):
+
+            elif (
+                price > prev['sys2_high']
+                and price > prev['ma50']
+                and prev['plus_di'] > prev['minus_di']
+            ):
                 signal_found = True
                 sys_used = 'sys2'
-                side = 'BUY'
-
-            # TODO: Tambahkan logika SHORT (sys1_low / sys2_low) jika akun support Futures.
-            # Untuk Spot MEXC, kita hanya fokus BUY.
 
             if signal_found:
                 print(f">>> SIGNAL ENTRY ({sys_used})")
-                if self.execute_trade(side, size):
+                if self.execute_trade('BUY', size):
                     self.state['in_position'] = True
-                    self.state['position_side'] = 'LONG' if side == 'BUY' else 'SHORT'
+                    self.state['position_side'] = 'LONG'
                     self.state['entry_price'] = price
                     self.state['last_pyramid_price'] = price
                     self.state['units'] = 1
                     self.state['system_in_use'] = sys_used
-                    # Set Initial Stop Loss
-                    sl = price - (atr * self.stop_loss_atr) if side == 'BUY' else price + (atr * self.stop_loss_atr)
-                    self.state['stop_loss_price'] = sl
+                    self.state['stop_loss_price'] = price - (atr * self.stop_loss_atr)
                     self.save_state()
+
 
     def run(self):
         print("--- Turtle Bot Optimized Started ---")
